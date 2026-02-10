@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Echo Leap</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            background: #1a1a2e;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: 'Courier New', monospace;
+            color: #eee;
+        }
+        #gameContainer {
+            position: relative;
+            border: 4px solid #4a4a6a;
+            border-radius: 8px;
+            box-shadow: 0 0 30px rgba(100, 100, 255, 0.3);
+        }
+        canvas {
+            display: block;
+            background: linear-gradient(180deg, #0f0f23 0%, #1a1a35 100%);
+        }
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            right: 10px;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+        }
+        .stat {
+            background: rgba(0,0,0,0.6);
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+        #echoMeter {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            width: 150px;
+            height: 20px;
+            background: rgba(0,0,0,0.6);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        #echoFill {
+            height: 100%;
+            background: linear-gradient(90deg, #6366f1, #8b5cf6);
+            width: 0%;
+            transition: width 0.1s;
+        }
+        #instructions {
+            margin-top: 20px;
+            text-align: center;
+            opacity: 0.7;
+        }
+        #levelInfo {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.9);
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            display: none;
+        }
+        h1 { margin-bottom: 10px; color: #8b5cf6; }
+        .highlight { color: #f472b6; }
+        button {
+            margin-top: 15px;
+            padding: 10px 25px;
+            font-size: 16px;
+            background: #6366f1;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        button:hover { background: #4f46e5; }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <canvas id="gameCanvas" width="800" height="500"></canvas>
+        <div id="ui">
+            <div class="stat">💀 Deaths: <span id="deathCount">0</span></div>
+            <div class="stat">⭐ Echoes Active: <span id="echoCount">0</span>/3</div>
+        </div>
+        <div id="echoMeter"><div id="echoFill"></div></div>
+        <div id="levelInfo">
+            <h1>🌌 Echo Leap</h1>
+            <p>Leave <span class="highlight">Echoes</span> behind as you play.</p>
+            <p>Echoes replay your past movements.</p>
+            <p>Stand on plates <span class="highlight">WITH</span> your Echoes to open doors!</p>
+            <p><strong>Controls: Arrow Keys or WASD</strong></p>
+            <button onclick="startGame()">Start Game</button>
+        </div>
+    </div>
+    <div id="instructions">
+        <p>↑ Jump &nbsp;|&nbsp; ←→ Move &nbsp;|&nbsp; Echo fills every 3s (max 3) &nbsp;|&nbsp; R to Restart</p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Game state
+        let gameRunning = false;
+        let deaths = 0;
+        let level = 1;
+        
+        // Player
+        const player = {
+            x: 50,
+            y: 400,
+            width: 24,
+            height: 32,
+            vx: 0,
+            vy: 0,
+            speed: 4,
+            jumpPower: -12,
+            grounded: false,
+            color: '#f472b6',
+            trail: []
+        };
+        
+        // Physics
+        const gravity = 0.5;
+        const friction = 0.85;
+        
+        // Echo system
+        let echoMeter = 0;
+        const maxEchoes = 3;
+        const echoRecordInterval = 180; // frames (3 seconds at 60fps)
+        let echoes = [];
+        let recording = [];
+        
+        // Level elements
+        let platforms = [];
+        let plates = [];
+        let doors = [];
+        let coins = [];
+        let spikes = [];
+        let portal = null;
+        
+        // Input
+        const keys = {};
+        
+        // Level designs
+        const levels = [
+            // Level 1 - Introduction
+            {
+                platforms: [
+                    {x: 0, y: 460, w: 800, h: 40}, // ground
+                    {x: 200, y: 380, w: 100, h: 20},
+                    {x: 380, y: 320, w: 100, h: 20},
+                    {x: 550, y: 260, w: 80, h: 20},
+                    {x: 680, y: 200, w: 120, h: 20}
+                ],
+                plates: [
+                    {x: 420, y: 450, w: 60, h: 10, id: 1, activated: false}
+                ],
+                doors: [
+                    {x: 700, y: 140, w: 30, h: 60, requiredPlate: 1, open: false}
+                ],
+                spikes: [],
+                coins: [
+                    {x: 240, y: 350},
+                    {x: 420, y: 290},
+                    {x: 580, y: 230}
+                ],
+                portal: {x: 750, y: 160, w: 40, h: 40},
+                startX: 50,
+                startY: 420
+            },
+            // Level 2 - First Echo Puzzle
+            {
+                platforms: [
+                    {x: 0, y: 460, w: 300, h: 40},
+                    {x: 400, y: 460, w: 400, h: 40},
+                    {x: 300, y: 380, w: 200, h: 20},
+                    {x: 100, y: 280, w: 100, h: 20},
+                    {x: 600, y: 300, w: 150, h: 20},
+                    {x: 350, y: 180, w: 100, h: 20}
+                ],
+                plates: [
+                    {x: 150, y: 450, w: 60, h: 10, id: 1, activated: false},
+                    {x: 620, y: 450, w: 60, h: 10, id: 2, activated: false}
+                ],
+                doors: [
+                    {x: 380, y: 120, w: 30, h: 60, requiredPlate: 1, open: false},
+                    {x: 520, y: 120, w: 30, h: 60, requiredPlate: 2, open: false}
+                ],
+                spikes: [
+                    {x: 300, y: 440, w: 100, h: 20}
+                ],
+                coins: [
+                    {x: 130, y: 250},
+                    {x: 650, y: 270},
+                    {x: 390, y: 150}
+                ],
+                portal: {x: 400, y: 140, w: 40, h: 40},
+                startX: 50,
+                startY: 420
+            },
+            // Level 3 - Echo Coordination
+            {
+                platforms: [
+                    {x: 0, y: 460, w: 200, h: 40},
+                    {x: 280, y: 460, w: 240, h: 40},
+                    {x: 600, y: 460, w: 200, h: 40},
+                    {x: 100, y: 350, w: 80, h: 20},
+                    {x: 350, y: 300, w: 100, h: 20},
+                    {x: 600, y: 250, w: 80, h: 20},
+                    {x: 350, y: 180, w: 100, h: 20},
+                    {x: 150, y: 120, w: 80, h: 20}
+                ],
+                plates: [
+                    {x: 100, y: 450, w: 50, h: 10, id: 1, activated: false},
+                    {x: 400, y: 450, w: 50, h: 10, id: 2, activated: false},
+                    {x: 360, y: 170, w: 50, h: 10, id: 3, activated: false}
+                ],
+                doors: [
+                    {x: 160, y: 60, w: 30, h: 60, requiredPlate: 3, open: false}
+                ],
+                spikes: [
+                    {x: 200, y: 440, w: 80, h: 20},
+                    {x: 520, y: 440, w: 80, h: 20}
+                ],
+                coins: [
+                    {x: 130, y: 320},
+                    {x: 390, y: 270},
+                    {x: 630, y: 220},
+                    {x: 180, y: 90}
+                ],
+                portal: {x: 165, y: 80, w: 40, h: 40},
+                startX: 50,
+                startY: 420
+            }
+        ];
+        
+        function loadLevel(lvlIndex) {
+            const lvl = levels[lvlIndex % levels.length];
+            player.x = lvl.startX;
+            player.y = lvl.startY;
+            player.vx = 0;
+            player.vy = 0;
+            player.trail = [];
+            platforms = lvl.platforms.map(p => ({...p}));
+            plates = lvl.plates.map(p => ({...p}));
+            doors = lvl.doors.map(d => ({...d, open: false}));
+            spikes = lvl.spikes.map(s => ({...s}));
+            coins = lvl.coins.map(c => ({...c, collected: false}));
+            portal = {...lvl.portal};
+            echoes = [];
+            recording = [];
+            echoMeter = 0;
+            updateEchoUI();
+        }
+        
+        function startGame() {
+            document.getElementById('levelInfo').style.display = 'none';
+            gameRunning = true;
+            deaths = 0;
+            level = 1;
+            document.getElementById('deathCount').textContent = deaths;
+            loadLevel(1);
+            gameLoop();
+        }
+        
+        // Input handling
+        document.addEventListener('keydown', (e) => {
+            keys[e.key.toLowerCase()] = true;
+            if (e.key === 'r' || e.key === 'R') {
+                loadLevel(level);
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            keys[e.key.toLowerCase()] = false;
+        });
+        
+        function update() {
+            if (!gameRunning) return;
+            
+            // Player input
+            if (keys['arrowleft'] || keys['a']) {
+                player.vx = -player.speed;
+            } else if (keys['arrowright'] || keys['d']) {
+                player.vx = player.speed;
+            } else {
+                player.vx *= friction;
+            }
+            
+            if ((keys['arrowup'] || keys['w'] || keys[' ']) && player.grounded) {
+                player.vy = player.jumpPower;
+                player.grounded = false;
+            }
+            
+            // Apply gravity
+            player.vy += gravity;
+            
+            // Move player
+            player.x += player.vx;
+            player.y += player.vy;
+            
+            // Platform collision
+            player.grounded = false;
+            for (let plat of platforms) {
+                if (rectCollision(player, plat)) {
+                    // Determine collision side
+                    const overlapX = Math.min(player.x + player.width - plat.x, plat.x + plat.w - player.x);
+                    const overlapY = Math.min(player.y + player.height - plat.y, plat.y + plat.h - player.y);
+                    
+                    if (overlapX < overlapY) {
+                        // Horizontal collision
+                        if (player.vx > 0) {
+                            player.x = plat.x - player.width;
+                        } else {
+                            player.x = plat.x + plat.w;
+                        }
+                        player.vx = 0;
+                    } else {
+                        // Vertical collision
+                        if (player.vy > 0) {
+                            player.y = plat.y - player.height;
+                            player.grounded = true;
+                        } else {
+                            player.y = plat.y + plat.h;
+                        }
+                        player.vy = 0;
+                    }
+                }
+            }
+            
+            // Screen bounds
+            if (player.x < 0) player.x = 0;
+            if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
+            if (player.y > canvas.height) {
+                die();
+                return;
+            }
+            
+            // Spike collision
+            for (let spike of spikes) {
+                if (rectCollision(player, spike)) {
+                    die();
+                    return;
+                }
+            }
+            
+            // Coin collection
+            for (let coin of coins) {
+                if (!coin.collected && rectCollision(player, {x: coin.x, y: coin.y, width: 20, height: 20})) {
+                    coin.collected = true;
+                }
+            }
+            
+            // Record player position
+            recording.push({
+                x: player.x,
+                y: player.y,
+                frame: recording.length
+            });
+            
+            // Echo meter fills over time
+            echoMeter++;
+            document.getElementById('echoFill').style.width = (echoMeter / echoRecordInterval * 100) + '%';
+            
+            // Create echo when meter full
+            if (echoMeter >= echoRecordInterval && echoes.length < maxEchoes) {
+                createEcho();
+                echoMeter = 0;
+            }
+            
+            // Update echoes
+            updateEchoes();
+            
+            // Check plates
+            checkPlates();
+            
+            // Check portal
+            if (rectCollision(player, portal)) {
+                levelComplete();
+            }
+        }
+        
+        function rectCollision(a, b) {
+            return a.x < b.x + b.width && 
+                   a.x + a.width > b.x && 
+                   a.y < b.y + b.height && 
+                   a.y + a.height > b.y;
+        }
+        
+        function createEcho() {
+            echoes.push({
+                recording: [...recording],
+                playbackIndex: 0,
+                active: true,
+                color: `hsl(${260 + echoes.length * 30}, 70%, 60%)`
+            });
+            recording = [];
+            updateEchoUI();
+        }
+        
+        function updateEchoes() {
+            for (let echo of echoes) {
+                if (echo.active && echo.playbackIndex < echo.recording.length) {
+                    const frame = echo.recording[echo.playbackIndex];
+                    echo.x = frame.x;
+                    echo.y = frame.y;
+                    echo.playbackIndex++;
+                }
+            }
+        }
+        
+        function checkPlates() {
+            for (let plate of plates) {
+                const wasActivated = plate.activated;
+                plate.activated = false;
+                
+                // Check if player is on plate
+                if (rectCollision(player, {x: plate.x, y: plate.y, width: plate.w, height: plate.h})) {
+                    plate.activated = true;
+                }
+                
+                // Check if any echo is on plate
+                for (let echo of echoes) {
+                    if (echo.active && rectCollision(
+                        {x: echo.x, y: echo.y, width: player.width, height: player.height},
+                        {x: plate.x, y: plate.y, width: plate.w, height: plate.h}
+                    )) {
+                        plate.activated = true;
+                    }
+                }
+            }
+            
+            // Update doors based on plates
+            for (let door of doors) {
+                const plate = plates.find(p => p.id === door.requiredPlate);
+                door.open = plate ? plate.activated : false;
+            }
+        }
+        
+        function die() {
+            deaths++;
+            document.getElementById('deathCount').textContent = deaths;
+            loadLevel(level);
+        }
+        
+        function levelComplete() {
+            level++;
+            document.getElementById('levelInfo').style.display = 'block';
+            document.querySelector('#levelInfo h1').textContent = `✨ Level ${level-1} Complete!`;
+            document.querySelector('#levelInfo p').innerHTML = `Coins collected: ${coins.filter(c => c.collected).length}/${levels[0].coins.length}<br>Deaths: ${deaths}`;
+            gameRunning = false;
+        }
+        
+        function updateEchoUI() {
+            document.getElementById('echoCount').textContent = echoes.length;
+        }
+        
+        function draw() {
+            // Clear
+            ctx.fillStyle = '#0f0f23';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw stars background
+            ctx.fillStyle = 'rgba(255,255,255,0.5)';
+            for (let i = 0; i < 50; i++) {
+                const x = (i * 73) % canvas.width;
+                const y = (i * 47) % canvas.height;
+                ctx.beginPath();
+                ctx.arc(x, y, 1, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            
+            // Draw platforms
+            for (let plat of platforms) {
+                const gradient = ctx.createLinearGradient(plat.x, plat.y, plat.x, plat.y + plat.h);
+                gradient.addColorStop(0, '#4a4a6a');
+                gradient.addColorStop(1, '#2a2a4a');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(plat.x, plat.y, plat.w, plat.h);
+                
+                // Top highlight
+                ctx.fillStyle = '#6a6a8a';
+                ctx.fillRect(plat.x, plat.y, plat.w, 3);
+            }
+            
+            // Draw spikes
+            ctx.fillStyle = '#ef4444';
+            for (let spike of spikes) {
+                const numSpikes = Math.floor(spike.w / 15);
+                for (let i = 0; i < numSpikes; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(spike.x + i * 15, spike.y + spike.h);
+                    ctx.lineTo(spike.x + i * 15 + 7.5, spike.y);
+                    ctx.lineTo(spike.x + i * 15 + 15, spike.y + spike.h);
+                    ctx.fill();
+                }
+            }
+            
+            // Draw plates
+            for (let plate of plates) {
+                ctx.fillStyle = plate.activated ? '#22c55e' : '#64748b';
+                ctx.fillRect(plate.x, plate.y, plate.w, plate.h);
+                
+                // Glow when activated
+                if (plate.activated) {
+                    ctx.shadowColor = '#22c55e';
+                    ctx.shadowBlur = 15;
+                    ctx.fillRect(plate.x, plate.y, plate.w, plate.h);
+                    ctx.shadowBlur = 0;
+                }
+            }
+            
+            // Draw doors
+            for (let door of doors) {
+                if (door.open) {
+                    ctx.fillStyle = 'rgba(34, 197, 94, 0.3)';
+                    ctx.fillRect(door.x, door.y, door.w, door.h);
+                    ctx.strokeStyle = '#22c55e';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(door.x, door.y, door.w, door.h);
+                } else {
+                    ctx.fillStyle = '#7c3aed';
+                    ctx.fillRect(door.x, door.y, door.w, door.h);
+                    ctx.strokeStyle = '#a78bfa';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(door.x, door.y, door.w, door.h);
+                    
+                    // Lock icon
+                    ctx.fillStyle = '#fbbf24';
+                    ctx.fillRect(door.x + door.w/2 - 5, door.y + door.h/2 - 5, 10, 10);
+                }
+            }
+            
+            // Draw portal
+            ctx.save();
+            ctx.translate(portal.x + portal.w/2, portal.y + portal.h/2);
+            ctx.rotate(Date.now() / 500);
+            const portalGradient = ctx.createRadialGradient(0, 0, 0, 0, 0, portal.w/2);
+            portalGradient.addColorStop(0, '#8b5cf6');
+            portalGradient.addColorStop(0.5, '#6366f1');
+            portalGradient.addColorStop(1, 'rgba(99, 102, 241, 0)');
+            ctx.fillStyle = portalGradient;
+            ctx.fillRect(-portal.w/2, -portal.h/2, portal.w, portal.h);
+            ctx.restore();
+            
+            // Draw coins
+            for (let coin of coins) {
+                if (!coin.collected) {
+                    ctx.fillStyle = '#fbbf24';
+                    ctx.beginPath();
+                    ctx.arc(coin.x + 10, coin.y + 10, 8, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.fillStyle = '#f59e0b';
+                    ctx.beginPath();
+                    ctx.arc(coin.x + 10, coin.y + 10, 4, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+            
+            // Draw echoes
+            for (let echo of echoes) {
+                if (echo.active) {
+                    ctx.globalAlpha = 0.5;
+                    ctx.fillStyle = echo.color;
+                    ctx.fillRect(echo.x, echo.y, player.width, player.height);
+                    
+                    // Echo trail effect
+                    ctx.globalAlpha = 0.3;
+                    for (let i = 1; i <= 3; i++) {
+                        const trailIndex = Math.max(0, echo.playbackIndex - i * 10);
+                        if (trailIndex < echo.recording.length) {
+                            const trail = echo.recording[trailIndex];
+                            ctx.fillStyle = echo.color;
+                            ctx.fillRect(trail.x, trail.y, player.width * (1 - i*0.2), player.height * (1 - i*0.2));
+                        }
+                    }
+                    ctx.globalAlpha = 1;
+                }
+            }
+            
+            // Draw player
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            
+            // Player eyes
+            ctx.fillStyle = 'white';
+            ctx.fillRect(player.x + 5, player.y + 8, 6, 6);
+            ctx.fillRect(player.x + 14, player.y + 8, 6, 6);
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(player.x + 7, player.y + 10, 3, 3);
+            ctx.fillRect(player.x + 16, player.y + 10, 3, 3);
+            
+            // Player trail
+            ctx.fillStyle = 'rgba(244, 114, 182, 0.3)';
+            for (let i = 1; i <= 5; i++) {
+                const trailIndex = Math.max(0, recording.length - i * 3);
+                if (trailIndex > 0) {
+                    const trail = recording[trailIndex];
+                    ctx.fillRect(trail.x, trail.y, player.width * (1 - i*0.15), player.height * (1 - i*0.15));
+                }
+            }
+        }
+        
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Show start screen
+        document.getElementById('levelInfo').style.display = 'block';
+        draw();
+    </script>
+</body>
+</html>
